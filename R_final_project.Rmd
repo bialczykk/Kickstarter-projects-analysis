@@ -1,0 +1,958 @@
+---
+title: "Kuba Białczyk 40835 - Final Project"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r include = FALSE}
+library(dplyr)
+library(readr)
+library(tidyverse)
+library(ggplot2)
+library(plotly)
+library(outliers)
+library(lubridate)
+library(ggpubr)
+library(nortest)
+library(forcats)
+library(psych)
+library(car)
+library(DT)
+
+kickstarter_palette <- c('#2bde73',
+                         '#2bd9de',
+                         "#eeeeee",
+                         '#081245',
+                         '#122906',
+                         'darkgrey')
+```
+
+# Kickstarter campaigns analysis (2009-2017)
+
+![](logo.png)
+
+## Dataset
+The dataset of Kickstarter Campaigns was downloaded from Kaggle (<a href=https://www.kaggle.com/datasets/kemical/kickstarter-projects>source</a>).
+
+It contains information of over 300.000 Kickstarter project that were launched in years 2009-2017. The dataset contains variables such as:
+<ul>
+<li> Name of the project
+<li> Category (159 categories) - specific category of campaign.
+<li> Main Category (15 categories) - general category of campaign.
+<li> Goal of campaign - how much the project aimed to collect.
+<li> Launch date - when the project was launched
+<li> Deadline - when was the deadline of the project
+<li> Currency - what is the currency of the project goal
+<li> Pledged - how much money was pledged to the project in specified currency
+<li> State - whether the campaign was successful, failed, suspended or canceled
+<li> Backers - number of backers who supported the project with their funds
+<li> Country - country of the project
+<li> Usd_pledged_real - how much was pledged (Calculated in USD)
+<li> Usd_goal_real - the goal of the campaign (in USD) </ul>
+
+## Hypothesis and Research question
+<ul>
+<li><strong>Research question</strong> - Failing campaigns fail because they set higher goals.
+<li><strong>Hypothesis</strong> - There is significant difference in mean goal of successful and unsuccessful campaigns
+<li>1a. Is mean usd_goal different in both groups?
+<li>1b. Is mean usd_pledged different in both groups?
+<li>1c. Is mean number of backers different in both groups?</ul>
+
+## Loading the data and data preparation
+<ul><li>Choosing columns
+<li>Checking if there are NA in the dataset
+<li>Factorising categorical values
+<li>describing data</ul>
+
+```{r results='hide', warning=FALSE, error=FALSE, message=FALSE}
+# Loading Data, choosing columns
+df <- read_csv('ks-projects-201801.csv')
+
+df <- df %>% 
+  select(c('name', 'category', 'main_category', 'launched', 'deadline', 
+           'state', 'backers', 'country', 'usd_pledged_real', 'usd_goal_real'))
+
+# Checking NA's in the dataset
+df %>%
+  summarise_all(funs(sum(is.na(.)))) 
+# it seems there are no NA's (only in names which mean nothing in this research)
+
+# Factorise categorical variables
+df['main_category'] = as.factor(df$main_category)
+df['category'] = as.factor(df$category)
+df['state'] = as.factor(df$state)
+df['country'] = as.factor(df$country)
+```
+
+## Descriptive statistics of the variables in the dataset
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+psych::describe(df)
+```
+
+## Distribution of categories
+It will not be needed for this research question, but let's check if out of curiosity
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+paste('number of specific categories of Kickstarter projects:',length(unique(df$category)))
+
+paste('Number of general categories of Kickstarter projects:', length(unique(df$main_category)))
+
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p <- df %>% 
+  ggplot(aes(x=reorder(main_category, main_category, function(x)-length(x)))) +
+  geom_bar(fill='#2bde73') +
+  labs(x="Main Category", y="Quantity")+
+  ggtitle("Distribution of registered campaigns per category") +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+ggplotly(p)
+```
+
+## Distribution of the <strong>state</strong> variable
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+df %>% 
+  group_by(state) %>% 
+  summarise(n=n(), percentage = paste(c(round(100*n/376046,2)),'%')) %>% 
+  ggplot(aes(x='', y=n, fill=state)) + 
+  geom_bar(stat="identity", width=1) + 
+  coord_polar("y", start=0) + theme_void() + 
+  geom_text(aes(y = n, label = percentage), color = "white", size=3, position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values=c('#2bde73',
+                             '#2bd9de',
+                             "#eeeeee",
+                             '#081245',
+                             '#122906',
+                             'darkgrey'))
+```
+<br>It seems that most of the campaigns are either failed or successful. I will merge canceled and suspended campaigns into failed and discard all other campaigns to obtain binary class success/failure<br>
+
+```{r warning=FALSE, error=FALSE, message=FALSE}
+df <- df %>% 
+  mutate(state = case_when(
+    state == 'failed' ~ 'failed',
+    state == 'successful' ~ 'successful',
+    state == 'suspended' ~ 'failed',
+    state == 'canceled' ~ 'failed',
+  )) 
+
+df <- df %>% filter(df$state == 'successful' | df$state == 'failed')
+
+df %>% 
+  group_by(state) %>% 
+  summarise(n=n(), percentage = paste(c(round(100*n/376046,2)),'%')) %>% 
+  ggplot(aes(x='', y=n, fill=state)) + 
+  geom_bar(stat="identity", width=1) + 
+  coord_polar("y", start=0) + theme_void() + 
+  geom_text(aes(y = n, label = percentage), color = "white", size=3, position = position_stack(vjust = 0.5)) +
+  scale_fill_manual(values=c('#2bde73',
+                             '#2bd9de',
+                             "#eeeeee",
+                             '#081245',
+                             '#122906',
+                             'darkgrey')) +ggtitle("Distribution of successful and failed projects")
+```
+
+
+<br>Great! Now we have binary variable of campaigns' final states - Success / Failure
+<br>Now, let's analyse distribution of numerical variables
+
+## Numerical Variables
+First, let's plot and analyze the distribution of goals that failed and successful projects and their pledges + number of backers.
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+# Whole columns
+p1 <- df %>% # distribution of Goal value in the dataset
+  ggplot(aes(x=usd_goal_real)) + 
+  geom_histogram(fill='#2bde73') +
+  scale_x_log10() +
+  labs(x='Goal in USD (logarithmized)', y='')
+
+p2 <- df %>% # distribution of pledged money value in the dataset
+  ggplot(aes(x=usd_pledged_real)) + 
+  geom_histogram(fill='#2bde73') + #"#081245"
+  scale_x_log10() +
+  labs(x='Pledged in USD (logarithmized)', y='')
+
+# Grouped by state
+p3 <- df %>% # distribution of Goal grouped by project state
+  ggplot(aes(x=usd_goal_real, group=state, fill=state)) + 
+  geom_histogram() +
+  scale_x_log10() +
+  scale_fill_manual(values=c('#081245','#2bde73'))+
+  labs(x='Goal in USD (logarithmized)', y='')
+
+p4 <- df %>% # distribution of money pledged value grouped by project state
+  ggplot(aes(x=usd_pledged_real, group=state, fill=state)) + 
+  geom_histogram() +
+  scale_x_log10() +
+  scale_fill_manual(values=c('#081245','#2bde73'))+
+  labs(x='Pledged in USD (logarithmized)', y='')
+
+# Number of backers
+p5 <- df %>% # distribution of backers
+  ggplot(aes(x=backers)) + 
+  geom_histogram(fill='#2bde73') +
+  scale_x_log10() +
+  labs(x='Number of backers in USD (logarithmized)', y='')
+
+p6 <- df %>% # distribution of backers grouped by project state
+  ggplot(aes(x=backers, group=state, fill=state)) + 
+  geom_histogram() +
+  scale_x_log10() +
+  scale_fill_manual(values=c('#081245','#2bde73'))+
+  labs(x='Number of backers in USD (logarithmized)', y='')
+
+ggarrange(p1, p2, p5, nrow = 3)
+
+ggarrange(p3, p4, p6, nrow = 3)
+
+```
+<br>Distribution of backers in successful projects seems to be normal or close to normal, whereas the distribution in failed projects seems to be positively skewed, which makes sense if there are usually less backers for unsuccessful campaigns.
+
+<br><br>Goal seems a normal distribution, so it would be good if we test the normality of it and also, if exists some statistical difference between means of goals and pledged failed and success projects to answer our research question<br>
+
+## Normality tests
+Normality tests for usd_goal_real, usd_pledged_real and backers 
+<br>anderson-darling test + qqplot
+###usd_goal_real
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+# usd_goal_real (whole column)
+paste('usd_goal_real: Anderson-Darling Normality Test p_value:',ad.test(df$usd_goal_real)[2])
+p1 <- ggqqplot(df$usd_goal_real) + ggtitle('usd_goal_real qqplot')
+
+# usd_goal_real (grouped by state)
+x <-df %>% # for successful campaigns
+  filter(state=='successful') %>% 
+  select(usd_goal_real)
+paste('usd_goal_real (only successful projects): Anderson-Darling Normality Test p_value:',ad.test(x$usd_goal_real)[2])
+p2 <- ggqqplot(x$usd_goal_real) + ggtitle('usd_goal_real (for succesful campaigns) qqplot')
+
+y <-df %>% # for failed campaigns
+  filter(state=='failed') %>% 
+  select(usd_goal_real)
+paste('usd_goal_real (only failed projects): Anderson-Darling Normality Test p_value:',ad.test(y$usd_goal_real)[2])
+p3 <- ggqqplot(y$usd_goal_real) + ggtitle('usd_goal_real (for failed campaigns) qqplot')
+
+ggarrange(p1, p2, p3, nrow = 1)
+```
+<br>usd_goal_real is not normally distributed as in all cases p-value is smaller than 0.05
+
+### usd_pledged_real
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+# usd_pledged_real (whole column)
+paste('usd_pledged_real: Anderson-Darling Normality Test p_value:', ad.test(df$usd_pledged_real)[2])
+p1 <- ggqqplot(df$usd_pledged_real) + ggtitle('usd_pledged_real qqplot')
+
+# usd_pledged_real (grouped by state)
+x <-df %>% # for succesful campaigns
+  filter(state=='successful') %>% 
+  select(usd_pledged_real)
+paste('usd_pledged_real (only successful projects): Anderson-Darling Normality Test p_value:',ad.test(x$usd_pledged_real)[2])
+p2 <- ggqqplot(x$usd_pledged_real) + ggtitle('usd_pledged_real (for succesful campaigns) qqplot')
+
+y <-df %>% # for failed campaigns
+  filter(state=='failed') %>% 
+  select(usd_pledged_real)
+paste('usd_pledged_real (only failed projects): Anderson-Darling Normality Test p_value:',ad.test(y$usd_pledged_real)[2])
+p3 <- ggqqplot(y$usd_pledged_real) + ggtitle('usd_pledged_real (for failed campaigns) qqplot')
+
+ggarrange(p1, p2, p3, nrow = 1)
+```
+<br>usd_pledged_Real is not normally distributed as in all cases p-value is smaller than 0.05
+### backers
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+paste('backers: 
+      Anderson-Darling Normality Test p_value:',
+      ad.test(df$backers)[2])
+p1 <- ggqqplot(df$backers) + ggtitle('backers qqplot')
+
+# backers (grouped by state)
+x <-df %>% # for succesful campaigns
+  filter(state=='successful') %>% 
+  select(backers)
+paste('Backers (only successful projects): Anderson-Darling Normality Test backers:',ad.test(x$backers)[2])
+p2 <- ggqqplot(x$backers) + ggtitle('backers (for succesful campaigns) qqplot')
+
+y <-df %>% # for failed campaigns
+  filter(state=='failed') %>% 
+  select(backers)
+paste('Backers (only failed projects): Anderson-Darling Normality Test p_value:',ad.test(y$backers)[2])
+p3 <- ggqqplot(y$backers) + ggtitle('backers (for failed campaigns) qqplot')
+
+ggarrange(p1, p2, p3, nrow = 1)
+```
+<br>Neither Goal nor Pledged and Backers are not normally distributed in general and within groups
+
+## Violin plots for checking the distribution of numerical variables
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p1 <- df %>% 
+ggplot(aes("usd_goal_real",usd_goal_real))+
+  geom_point()+
+  geom_violin(fill=kickstarter_palette[1])+
+  scale_y_log10()
+
+p2 <- df %>% 
+  ggplot(aes("usd_pledged_real",usd_pledged_real))+
+  geom_point()+
+  geom_violin(fill=kickstarter_palette[2])+
+  scale_y_log10()
+
+p3 <- df %>% 
+  ggplot(aes("backers", backers))+
+  geom_point()+
+  geom_violin(fill=kickstarter_palette[3])+
+  scale_y_log10()
+
+ggarrange(p1, p2, p3, nrow = 1)
+```
+
+<br>It seems that there are significant outliers in all three variables (goal, pledged and backers)
+<br>Let's remove these rows from the dataset
+
+## Removing Outliers
+```{r warning=FALSE, error=FALSE, message=FALSE}
+# removing usd_pledged_real outliers
+pledged_outlier_scores <- scores(df$usd_pledged_real)
+df[pledged_outlier_scores > 3 | pledged_outlier_scores < -3, 'usd_pledged_real'] <- NA
+
+# removing usd_goal_real outliers
+real_outlier_scores <- scores(df$usd_goal_real)
+df[real_outlier_scores > 3 | real_outlier_scores < -3, 'usd_goal_real'] <- NA
+
+# removing backers outliers
+backers_outlier_scores <- scores(df$backers)
+df[backers_outlier_scores > 3 | backers_outlier_scores < -3, 'backers'] <- NA
+
+# checking for NA's (outliers)
+#df %>%
+#  summarise_all(funs(sum(is.na(.))))
+
+# Dropping rows containing NA values
+dim1 = dim(df)[1]
+df <- df %>% drop_na() 
+dim2 = dim(df)[1]
+paste('Dropped', dim1-dim2, 'outliers')
+```
+
+## Differences between means of three variables between 2 groups (success, failure)
+first, let's see violin plots of the three variables grouped by state
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p1 <- df %>% 
+  ggplot(aes(x = usd_goal_real, y = state, fill = state)) +
+  geom_violin() +
+  scale_x_log10() +
+  scale_fill_manual(values=c('#081245','#2bde73'))
+
+p2 <- df %>% 
+  ggplot(aes(x = usd_pledged_real, y = state, fill = state)) +
+  geom_violin() +
+  
+  scale_fill_manual(values=c('#081245','#2bde73'))
+
+p3 <- df %>% 
+  ggplot(aes(x = backers, y = state, fill = state)) +
+  geom_violin() +
+  scale_x_log10() +
+  scale_fill_manual(values=c('#081245','#2bde73'))
+
+ggarrange(p1, p2, p3, nrow = 3)
+```
+<br>This shows us two things:<br><ul>
+<li>it seems that there might be a (probable) difference in mean goal
+<li>it seems that there is a difference in mean pledged and mean backers</ul><br>
+
+### Variances equality (Levene test)
+before checking the differences between means, it is important to check if variances between groups are equal 
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+g <- leveneTest(usd_goal_real ~ state, data = df)
+paste('Levene Test for usd_goal_real variable: Value -', g[1,2],';P -', g[1,3])
+p <- leveneTest(usd_pledged_real ~ state, data = df)
+paste('Levene Test for usd_pledged_real variable: Value -', p[1,2],';P -', p[1,3])
+b <- leveneTest(backers ~ state, data = df)
+paste('Levene Test for backers variable: Value -', b[1,2],';P -', b[1,3])
+```
+
+<br>In all cases, p-value of Levene Test is very close to 0 (smaller than 0.05) which means that variances are not equal which is an important insight before conducting T-Test<br>
+
+## T-Test for independent groups
+### One-sided T-Test for usd_goal_real variable with 'state' as grouping variable
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+t.test(df$usd_goal_real~df$state, var.equal = FALSE)
+```
+### One-sided T-Test for usd_pledged_real variable with 'state' as grouping variable
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+t.test(df$usd_pledged_real~df$state, var.equal = FALSE)
+```
+### One-sided T-Test for brackers variable with 'state' as grouping variable
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+t.test(df$backers~df$state, var.equal = FALSE)
+```
+
+<br> In all cases, the result of T-Test indicated p-value lower than 0.05 which means that for every variable, mean of groups (successful / failed) are not equal<br>
+
+## Means visualization
+Knowing that for every analysed numeric variable means between groups are different, visualization of means (including confidence intervals) would be insightful
+
+### usd_goal_real - means of project groups
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+table_goal <- df %>% 
+  group_by(state) %>%
+  summarise(
+    N = n(),
+    mean = mean(usd_goal_real),
+    sd = sd(usd_goal_real)
+  ) %>%
+  mutate(se = sd / sqrt(N))%>%
+  mutate(CI = se*qt((1-0.05)/2+.5, N-1))
+
+datatable(table_goal)
+
+p <- ggerrorplot(df, x = "state", y = "usd_goal_real",
+            desc_stat = "mean_ci",
+            error.plot = "errorbar",
+            add = "mean",
+            title = "Means of project goal between groups (states)",
+            ylab = "Mean goal in USD")
+ggplotly(p)
+
+sample_size = df %>% group_by(state) %>% summarise(sample = n())
+
+p <- df %>%
+  left_join(sample_size) %>%
+  mutate(state = paste0(state, "\n", "n=", sample)) %>%
+  ggplot( aes(x=state, y=usd_goal_real, fill=state)) +
+  scale_y_log10() +
+  geom_violin() +
+  scale_fill_manual(values=c('#081245','#2bde73')) + 
+  geom_boxplot(width=0.1, color="darkgrey", alpha=0.2) +
+  ggtitle("Visualization of differences between successful and failed \ncampaigns in campaign goal") + stat_compare_means(method = "t.test")
+ggplotly(p)
+```
+### usd_pledged_real - means of project groups
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+table_pledged <- df %>% 
+  group_by(state) %>%
+  summarise(
+    N = n(),
+    mean = mean(usd_pledged_real),
+    sd = sd(usd_pledged_real)
+  ) %>%
+  mutate(se = sd / sqrt(N))%>%
+  mutate(CI = se*qt((1-0.05)/2+.5, N-1))
+
+datatable(table_pledged)
+
+p <- ggerrorplot(df, x = "state", y = "usd_pledged_real",
+            desc_stat = "mean_ci",
+            error.plot = "errorbar",
+            add = "mean",
+            title = "Means of money pladged for project between groups (states)",
+            ylab = "Mean money pledged in USD")
+ggplotly(p)
+
+
+p <- df %>%
+  left_join(sample_size) %>%
+  mutate(state = paste0(state, "\n", "n=", sample)) %>%
+  ggplot( aes(x=state, y=usd_pledged_real, fill=state)) +
+  scale_y_log10() +
+  geom_violin() +
+  scale_fill_manual(values=c('#081245','#2bde73')) + 
+  geom_boxplot(width=0.1, color="darkgrey", alpha=0.2) +
+  ggtitle("Visualization of differences between successful and failed \ncampaigns in pledged money") + stat_compare_means(method = "t.test")
+ggplotly(p)
+```
+### backers - means of project groups
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+table_backers <- df %>% 
+  group_by(state) %>%
+  summarise(
+    N = n(),
+    mean = mean(backers),
+    sd = sd(backers)
+  ) %>%
+  mutate(se = sd / sqrt(N))%>%
+  mutate(CI = se*qt((1-0.05)/2+.5, N-1))
+
+datatable(table_backers)
+
+ p <- ggerrorplot(df, x = "state", y = "backers",
+            desc_stat = "mean_ci",
+            error.plot = "errorbar",
+            add = "mean",
+            title = "Means of backers of a project between groups (states)",
+            ylab = "Mean number of backers in USD")
+ggplotly(p)
+
+
+p <- df %>%
+  left_join(sample_size) %>%
+  mutate(state = paste0(state, "\n", "n=", sample)) %>%
+  ggplot( aes(x=state, y=backers, fill=state)) +
+  scale_y_log10() +
+  geom_violin() +
+  scale_fill_manual(values=c('#081245','#2bde73')) + 
+  geom_boxplot(width=0.1, color="darkgrey", alpha=0.2) +
+  ggtitle("Visualization of differences between successful and failed \ncampaigns in number of backers") + stat_compare_means(method = "t.test")
+ggplotly(p)
+```
+<br>That's very interesting -- failed campaigns tend to have significantly bigger goals, 
+but collect less money and attract less backers than campaigns that achieve success.
+
+Let's check one last thing -- how close to goal campaigns are (over or under the goal)
+
+## Closeness to goal value
+Let's check how on average campaigns were either above the goal or below the goal. The value will be counted in percentages of money pledged (calculated by dividin usd_pledged_real by usd_goal_real)
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+perc_table = df %>% 
+  mutate(percentage = usd_pledged_real / usd_goal_real)  %>% 
+  group_by(state) %>%
+  summarise(
+    N = n(),
+    mean = mean(percentage),
+    sd = sd(percentage)
+  ) %>%
+  mutate(se = sd / sqrt(N))%>%
+  mutate(CI = se*qt((1-0.05)/2+.5, N-1))
+
+datatable(perc_table)
+
+df <- df %>% 
+  mutate(percentage = usd_pledged_real / usd_goal_real)
+
+p <- ggerrorplot(df, x = "state", y = "percentage",
+            desc_stat = "mean_ci",
+            error.plot = "errorbar",
+            add = "mean") + ylab("Collected Money devided by Goal") + ggtitle('Mean percentage of goal collected (pledged / goal)\nGrouped by campaign state')
+ggplotly(p)
+```
+<br>This is interesting as well! It seems that successful campaigns not only have higher pledgesand lower goals at the same time when compared to failed campaigns, but also, they significantly exceed the goal (mean=7.41, CI = 1.82), whereas failued campaigns are on average not even close to their goals (mean=0.29, CI=0.18).
+
+## Results
+The analysis of means of variables campaign goal, pledged money and number of backers with the use of one-sided T-Test for independent groups revealed that successful Kickstarter campaigns that took place between 2009 and 2017 had significantly lower goals (mean=8147, CI=74.7) than failed campaigns (mean=32032, CI=501). However, successful campaigns had significantly higher  average pledged money (mean=13213, CI=138) and average number of backers (mean=168, CI=1.62) than failed campaigns with lower average pledged money (mean=1445, CI=25.0) and number of backers (mean=17.5, CI=0.25). Additionally, successful campaigns on average exceed the goal by 741% (mean=7.41, CI=1.82), whereas failed campaigns raise on average 28.62% of established goal (mean=0.286, CI=0.18).
+
+## Conclusion
+
+Conclusion to be drawn from the results of the analysis can indicate that successful campaigns, are the ones whose owners establish lower goals. Such campaigns not only attract significantly more backers, but also collect significantly more money than campaigns that are unsuccessful and have on average higher established goals. What is also suprising, is the fact that successful campaigns significantly exceed planned goals, whereas failed campaigns on average don't get close to the goal.
+There is a number of possible implications:
+<ol>
+<li>More backers believe that campaigns with lower goals will be successful
+<li>Smart campaigns creators know about the above and intentionally set lower campaign goal, 
+<li>while counting that it will attract more backers and exceed the goal.
+<li>Kickstarter algorithm possibly tend to promote campaigns that are closer to reaching the goal.
+<li>Campaign that fail are usually projects that are very expensive and difficult to fund.
+</ol><br>
+
+## Limitations
+
+<ul>
+<li>First limitation is that the dataset is highly skewed and contain many extreme values.
+<li>Second limitation is that the numerical variables used in the analysis are not normally distributed.
+<li>Third limitation is that analysed groups (failed/success) are not equal.</ul>
+
+## Recommendations for further research
+
+<ul>
+<li>Analyse other features of campaigns and their relationship with success
+<li>Analyse trends in success ratio per time of campaigns and look for seasonality
+<li>More carefully filter the dataset to avoid high number of extreme observations
+<li>Create a statistical model for predicting whether campaign will be successful or not</li><br>
+
+## What's next?
+These results made me think more about the dataset. I came up with another hypothesis that can be tested:<br>
+<b>Variables such as usd_goal, data of launch, period (30/60 days), category, main_category, and country / region have relationship with whether campaign is successful or not.</b>
+
+<br>We already know the distribution of numerical data, so analysing it again will not be needed. Also, outliers have already been dropped. What's more data is already preprocessed (changed state variable to binary)
+
+## Categories (main_category variable)
+Let's come back to the categories! There are 15 main categories that can be analysed - let's do so :)
+<ul>
+<li>How are categories distributed? <br>
+<li>Which categories are most successful?<br>
+<li>Which category was most successful every year?
+</ul>
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+# distribution of main_categories
+p <- df %>% 
+  ggplot(aes(x=reorder(main_category, main_category, function(x)-length(x)))) +
+  geom_bar(fill='#2bde73') +
+  labs(x="Main Category", y="Quantity")+
+  ggtitle("Distribution of registered campaigns per category") +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+
+ggplotly(p)
+```
+<br>"Film and Video" is the most frequent project category, whereas "Dance" is least frequent. I'm curious if there is a relationship between frequency of category and it's success rate.
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+x <- df %>% 
+  mutate(state_en = case_when(
+    state == 'failed' ~ 0,
+    state == 'successful' ~ 1
+  )) %>% 
+  group_by(main_category) %>% 
+  summarize(success_rate = mean(state_en),
+            mean_goal = mean(usd_goal_real),
+            mean_pledged = mean(usd_pledged_real),
+            n_of_project = n()) %>% arrange(desc(success_rate))
+
+x$main_category <- factor(x$main_category,                                    # Factor levels in decreasing order
+                  levels = x$main_category[order(x$success_rate, decreasing = TRUE)])
+
+
+p<-x %>% 
+  ggplot(aes(x=main_category, y=success_rate)) + 
+  geom_bar(fill='#2bde73', stat="identity") + 
+  labs(x="Main Category", y="Success Rate")+
+  ggtitle("Success rate of campaigns per category") +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+ggplotly(p)
+```
+<br>Hmm... Interesting, the least frequent categories like Dance, Theater or Comics have the highest success rate which is higher than 50%! That might indicate that there is a relationship between category (and its frequency) and state of the project (success / failure)
+<br><br>Let's check which category has most generous backers -- or rather, which category got on average biggest amount of money from backers.
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p1 <- df %>% 
+  group_by(main_category) %>% 
+  summarise(mean_pledged = mean(usd_pledged_real)) %>% 
+  arrange(mean_pledged) %>% 
+  ggplot(aes(x=reorder(main_category, desc(mean_pledged)), y=mean_pledged)) + 
+  geom_col(fill='#2bde73') +
+  ggtitle("Mean pledged amounts per category") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+  labs(x = "", y= "mean ")
+ggplotly(p1)
+
+p2 <- df %>% 
+  group_by(main_category) %>% 
+  summarise(mean_goal = mean(usd_goal_real)) %>% 
+  arrange(mean_goal) %>% 
+  ggplot(aes(x=reorder(main_category, desc(mean_goal)), y=mean_goal)) + 
+  geom_col(fill='#2bde73') +
+  ggtitle("Mean goal per category") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+  labs(x = "", y="")
+ggplotly(p2)
+```
+
+<br>Category "Dance" is most successful, but it also has low project mean goals and relatively low mean pledged amounts. On the other hand, technology is least successful, even if it highest mean goal and very high mean pledged amounts. This might indicate the relationship between main category and success of campaign.
+
+## Most successful category per year
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p <- df %>% 
+  mutate(year = year(df$launched),
+         state_en = case_when(
+           state == 'failed' ~ 0,
+           state == 'successful' ~ 1)) %>% 
+  filter(year >= 2009 & year <=2017) %>% 
+  mutate(year = as.factor(year)) %>% 
+  group_by(year,main_category) %>% 
+  summarise(success_rate = mean(state_en)) %>% group_by(year) %>% 
+  top_n(1, success_rate)
+
+datatable(p)
+```
+<br>And again, it Dance is highlighted - this time the analysis show that it was most successful project category from 2010 to 2014 -- I wonder if Kickstarter became popular due to Dance category...
+
+## Years
+I wonder how the success rate was changing over years and which categories were most popular over those years.
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+x <-df %>% 
+  mutate(year = year(df$launched),
+         state_en = case_when(
+           state == 'failed' ~ 0,
+           state == 'successful' ~ 1)) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  group_by(year) %>% 
+  summarize(success_rate = mean(state_en))
+
+p <- x %>% 
+  ggplot(aes(x=year, y=success_rate)) + 
+  geom_line(color='#2bde73') + 
+  geom_point(size = 2, color='#2bde73') +
+  scale_x_continuous(breaks=c(2009,2010,2011,2012,2013,2014,2015,2016,2017), limits=c(2009,2017)) +
+  ylim(c(0.25,0.5)) + ggtitle('Average project success rate per year')
+
+ggplotly(p)
+```
+
+<br>It seems that average success rate has fallen drastically after 2013 and hasn't came back to the prior state until 2017. I wonder what could cause this decrease? Maybe number of new projects every year? More projects, more failures?<br>
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p2 <- df %>% 
+mutate(year = year(df$launched)) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  filter(year >= 2009 & year<= 2017) %>% 
+  group_by(year) %>% 
+  summarise(n=n()) %>% 
+  ggplot(aes(year, n)) + 
+  geom_line(color='#2bde73') + 
+  geom_point(size=2, color='#2bde73')+
+  scale_x_continuous(breaks=c(2009,2010,2011,2012,2013,2014,2015,2016,2017), limits=c(2009,2017)) +
+  ggtitle("Number of projects per year") + labs(y='')
+ggplotly(p2)
+```
+<br> WOW! It seems that the annual average number of projects and annual average success rate might be correlated!
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+x <-df %>% 
+  mutate(year = year(df$launched),
+         state_en = case_when(
+           state == 'failed' ~ 0,
+           state == 'successful' ~ 1)) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  group_by(year) %>% 
+  summarize(success_rate = mean(state_en)) %>% 
+  filter(year >= 2009 & year<= 2017)
+
+y <- df %>% 
+mutate(year = year(df$launched)) %>% 
+  mutate(year = as.numeric(year)) %>% 
+  filter(year >= 2009 & year<= 2017) %>% 
+  group_by(year) %>% 
+  summarise(n=n())
+
+a = x$success_rate
+b = y$n
+
+z = data.frame(a,b)
+
+ggscatter(z, x = "a", y = "b", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "annual success_rate", ylab = "avg number of projects", color='#2bde73') +
+  ggtitle('Annual success rate ~ Annual number of projects')
+t = cor.test(a, b, method=c("pearson"))
+paste("Pearson's correlation value:", cor(a, b, method=c("pearson")), ";p-value:", t$p.value)
+
+```
+Pearson's correlation p-value is lower than 0.05 which indicates that there is a (negative) significant correlation (with coefficient -0.84) between annual number of projects and annual success rate! That's very intersting insight about functioning of Kickstarter! #Pattern #Spotted :D 
+
+## Months
+Now, let's check if there is any trend in months
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p <- df %>% 
+  mutate(
+    month = month(df$launched),
+    state_en = case_when(
+    state == 'failed' ~ 0,
+    state == 'successful' ~ 1)) %>% 
+  group_by(month) %>% 
+  summarize(success_rate = mean(state_en)) %>% 
+  ggplot(aes(x=month, y=success_rate)) + 
+  geom_line(color='#2bde73') + 
+  geom_point(size = 2, color='#2bde73') +
+  scale_x_continuous(breaks=c(1,2,3,4,5,6,7,8,9,10,11,12), limits=c(1,12)) +
+  #scale_x_discrete(labels=c("Jan","Feb","Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")) +
+  ylim(c(0.25,0.4)) +ggtitle("Average success rate per month of year")
+ggplotly(p)
+# couldn't do that with month names :()
+```
+
+<br>We can notice a pattern that there are significant decreases of success rate in July, December and January. That might indicate relationship between month of year and success of the project. Also, let's check if average number of projects per month of year has any relationship with success rate.
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p2 <- df %>% 
+mutate(month = month(df$launched)) %>% 
+  mutate(month = as.numeric(month)) %>% 
+  group_by(month) %>% 
+  summarise(n=n()) %>% 
+  ggplot(aes(month, n)) + 
+  geom_line(color='#2bde73') + 
+  geom_point(size=2, color='#2bde73')+
+  scale_x_continuous(breaks=c(1,2,3,4,5,6,7,8,9,10,11,12), limits=c(1,12)) +
+  ggtitle("Number of projects per year") + labs(y='')
+ggplotly(p2)
+
+```
+<br>From these two graphs it is difficult to distinguish a relationship, let's calculate the correlation, just in case :D
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+x <- df %>% 
+  mutate(
+    month = month(df$launched),
+    state_en = case_when(
+    state == 'failed' ~ 0,
+    state == 'successful' ~ 1)) %>% 
+  mutate(month = as.numeric(month)) %>% 
+  group_by(month) %>% 
+  summarize(success_rate = mean(state_en)) 
+
+y <- df %>% 
+mutate(month = month(df$launched)) %>% 
+  mutate(month = as.numeric(month)) %>% 
+  group_by(month) %>% 
+  summarise(n=n())
+
+a = x$success_rate
+b = y$n
+
+z = data.frame(a,b)
+
+ggscatter(z, x = "a", y = "b", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "Monthly success_rate", ylab = "avg number of projects per month", color='#2bde73') +
+  ggtitle('monthly success rate ~ monthly number of projects')
+t = cor.test(a, b, method=c("pearson"))
+paste("Pearson's correlation value:", cor(a, b, method=c("pearson")), ";p-value:", t$p.value)
+```
+
+<br>Person's correlation between monthly success rate and monthly number of projects does not indicate significant relationship as the p-value is equal to 0.34 (>0.05). Which means that there might be a seasonality in success rate (in terms of months), but it cannot be explained with monthly number of launched projects.
+
+## Project lengths
+Kickstarter allows users to start funding for month or for two months, let's check if it has any influence on success of campaigns.<br><br>
+First, let's calculate length of each campaign
+
+```{r results = 'hide', warning=FALSE, error=FALSE, message=FALSE}
+df['deadline'] <- as.Date(df$deadline)
+df['launched'] <- as.Date(df$launched)
+df['length_days'] <- as.numeric(df$deadline - df$launched)
+#max(df$length_days)
+df <- df %>% #removing an outlier
+  filter(!length_days == 14867)
+df <- df %>% # new column indicating whether campaign has 1 month or 2
+  mutate(
+    length_months = round(length_days / 30)
+  )
+```
+<br>Let's check distribution of successful and failed campaigns
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p<-df %>%
+  filter(length_months <= 2 & length_months > 0) %>% 
+  mutate(length_months <- factor(length_months)) %>% 
+  group_by(length_months, state) %>% 
+  summarise(n=n()) %>% 
+  ggplot(aes(x=length_months, y=n, group=state, fill=state)) + 
+  geom_bar(position='dodge', stat='identity') + 
+  scale_x_discrete(limits=c(1,2)) +
+  labs(title="Distribution of campaign time by state", ylab="") +
+  scale_fill_manual(values=c('#081245','#2bde73'))
+ggplotly(p)
+```
+<br>The most part of projects have 1 month of campaign. We can see that the ratio of successful one month campaigns is better than projects with 1.5 or 2 months of campaign. It indicates that there might be significant relationship between length of campaign and its success.
+
+```{r}
+p <- df %>% 
+  filter(length_months <= 2 & length_months > 0) %>% 
+  mutate(
+    state_en = case_when(
+    state == 'failed' ~ 0,
+    state == 'successful' ~ 1)) %>%
+  group_by(length_months) %>% 
+  summarise(success_ratio = mean(state_en),
+            n=n()) %>% 
+  arrange(desc(success_ratio))
+datatable(p)
+```
+<br> 1-month-long campaigns seems to have significantly higher success rate. However, the classes are highly imbalanced.
+
+
+## Countries and Regions
+One last thing to check in this dataset are countries. Let's start with distributino of project among countries
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p<-df %>% 
+  ggplot(aes(x=reorder(country, country, function(x)-length(x)))) +
+  geom_bar(fill='#2bde73') + labs(x='Country', y='Number of campaigns') +
+  scale_y_continuous()
+
+ggplotly(p)
+```
+<br>It seems that vast majority of projects come from USA. I believe that segregarion of countries into region will help to slightly balance this imbalnace :D
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+df <- df %>% 
+  mutate(region=case_when(
+    country == 'US' ~ 'US',
+    country == 'GB' ~ 'GB',
+    country == 'CA' ~ 'CA',
+    country == 'AU' ~ 'AU',
+    country == 'DE' ~ 'EU',
+    country == 'FR' ~ 'EU',
+    country == 'NL' ~ 'EU',
+    country == 'IT' ~ 'EU',
+    country == 'ES' ~ 'EU',
+    country == 'SE' ~ 'EU',
+    country == 'MX' ~ 'MX',
+    country == 'NZ' ~ 'NZ',
+    country == 'DK' ~ 'EU',
+    country == 'IE' ~ 'EU',
+    country == 'CH' ~ 'EU',
+    country == 'NO' ~ 'EU',
+    country == 'BE' ~ 'EU',
+    country == 'HK' ~ 'ASIA',
+    country == 'AT' ~ 'EU',
+    country == 'SG' ~ 'ASIA',
+    country == 'LU' ~ 'EU',
+    country == 'JP' ~ "ASIA",
+    country == 'N,0"' ~ 'OTHER'
+    
+  ))
+ 
+ # distribution of campaigns among regions
+ p<-df %>% 
+   ggplot(aes(x=reorder(region, region, function(x)-length(x)))) +
+   geom_bar(fill='#2bde73') + labs(x='Region', y='Number of campaigns') +
+   scale_y_continuous()
+ ggplotly(p)
+```
+
+<br>Looks a little bit better! Let's see distributin of success and failures of campaigns among the regions
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+ p<-df %>% 
+   ggplot(aes(x=reorder(region, region, function(x)-length(x)), group=state, fill=state)) +
+   geom_bar(position='dodge', stat='identity') + labs(x='Region', y='Number of campaigns') +
+   scale_y_continuous()
+
+p<-df %>%
+  group_by(region, state) %>% summarise(n=n()) %>% 
+  ggplot(aes(x=reorder(region, region, function(x)-length(x)), y=n, group=state, fill=state)) + 
+  geom_bar(position='dodge', stat='identity') + 
+  labs(title="Distribution of campaign region by state", ylab="", xlab="Region") +
+  scale_fill_manual(values=c('#081245','#2bde73')) 
+
+ ggplotly(p)
+```
+<br>Graph like this is not really clear and it's hard to make any conclusions. Let's try to show the success rate per country in a form of a table:
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+p <- df %>% 
+  mutate(
+    state_en = case_when(
+    state == 'failed' ~ 0,
+    state == 'successful' ~ 1)) %>%
+  group_by(region) %>% 
+  summarise(success_ratio = mean(state_en),
+            n=n()) %>% 
+  arrange(desc(success_ratio))
+datatable(p)
+
+```
+<br>According to this analysis, the US has not only the highest number of campaigns, but also the highest success rate, on the other hand, European countries (excluding GB) have the smallest success rate. It might indicate a relationship between success and region, however, the distribution is imbalanced and sample from US is significantly bigger than any other which makes it difficult to asses if such relationship exists.
+
+## Conslusions
+According to this extensive EDA, there are multiple interesting patterns to investigate in the data: <ul>
+<li>Relationship between categories and chance of success
+<li>Trend of growth and decrease of success rate per year
+<li>Negative correlation between Number of projects per year and success rate
+<li>Possible seasonality, according to certain months of years when success rate decreases
+<li>Higher success rate of shorter campaigns
+<li>Relationship between region and success rate
+</ul>
+## Recommendations
+Taking all of this to the account, I recommend the following actions in terms of further research:<ul>
+<li>Fitting classification model like logistic regression to the data in order to classify successful and failed campaigns. Features to be included: Month, Length, Main Category, Region, Goal and see how it works
+<li>Conduct qualitative research about possible causes of relationships indicated in this analysis
+
+### THANKS FOR YOUR ATTENTION
+#It was really long, but I hope that at least some of the insights are useful!
+
